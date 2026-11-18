@@ -21,22 +21,67 @@ pip install -r requirements.txt
 AZURE_SPEECH_KEY=...
 AZURE_SPEECH_REGION=centralindia
 AZURE_SPEECH_ENDPOINT=https://centralindia.api.cognitive.microsoft.com/
+AZURE_SPEECH_LOCALE=ur
 ```
+
+`AZURE_SPEECH_LOCALE=ur` forces **Urdu script** for Eng+Urdu calls. Without it, MAI auto-detect often writes the same speech as **Hindi (Devanagari)** (e.g. `एक नया` instead of `ایک نیا`).
 
 ## Usage
 
 ```bash
-# Default: smart pause compress + transcribe
+# Default: before + after + comparison (2 API calls), locale=ur
 python run.py 405
+
+# Explicit Urdu (Eng+Urdu → اردو + English)
+python run.py ..\voicenotes\405 --locale ur
 
 # Max accuracy, no cost save
 python run.py 405 --mode off
 
 # Preprocess only
 python run.py 405 --skip-transcribe
+
+# After only (1 API call)
+python run.py 405 --skip-before
 ```
 
-Outputs in `out/`: `*.clean.wav`, `*.txt`, `*.json`
+## Batch (parallel + retries + skip on hang/error)
+
+```powershell
+cd C:\OneHomes\demo\transcribe
+.\.venv\Scripts\Activate.ps1
+
+# All voicenotes in parallel (3 workers). Retries API/job failures.
+# If one file hangs past --job-timeout, it is skipped and logged; others keep going.
+python batch.py ..\voicenotes --workers 3 --locale ur
+
+# Safer on rate limits
+python batch.py ..\voicenotes --workers 2 --job-retries 3 --api-retries 4
+
+# After-only (1 API call per file)
+python batch.py ..\voicenotes --skip-before --workers 3
+```
+
+Logs:
+- `out/batch_summary.md` — OK / error / timeout table
+- `out/batch_results.json` — per-job timings (preprocess/API/total)
+- `out/batch_errors.jsonl` — machine-readable skip/failure records
+- `out/full_report.md` — full timing + quality report (`python report.py`)
+
+Outputs per file:
+
+```text
+out/405/
+  before/          # convert only (baseline)
+    405.wav
+    transcript.txt
+    transcript.json
+  after/           # selected mode (default: smart)
+    405.clean.wav
+    transcript.txt
+    transcript.json
+  comparison.md    # summary: duration save + missing facts/sentences
+```
 
 ## Modes
 

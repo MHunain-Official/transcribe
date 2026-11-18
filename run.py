@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Preprocess audio then transcribe with MAI-Transcribe-2."""
+"""Preprocess audio then transcribe with MAI-Transcribe-2.
+
+Writes a per-file folder with before/ (convert only) and after/ (chosen mode),
+plus comparison.md so you can spot missing content.
+
+For many files in parallel with retries / skip-on-error, use batch.py.
+"""
 
 from __future__ import annotations
 
@@ -7,21 +13,22 @@ import argparse
 import sys
 from pathlib import Path
 
-from preprocess import (
+from job import (
     DEFAULT_KEEP_SILENCE_S,
     DEFAULT_MIN_PAUSE_S,
     DEFAULT_MODE,
     DEFAULT_THRESHOLD_DB,
-    preprocess,
+    process_file,
 )
-from transcribe import transcribe
+from transcribe import DEFAULT_RETRIES, DEFAULT_TIMEOUT_S, TranscribeError
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Cost + accuracy: compress long dead-air, keep speech, "
-            "then transcribe with MAI-Transcribe-2. Default mode=smart."
+            "then transcribe with MAI-Transcribe-2. Default mode=smart. "
+            "Outputs out/<name>/{before,after}/ plus comparison.md."
         )
     )
     parser.add_argument("input", type=Path, help="Path to input audio file")
@@ -29,6 +36,11 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-transcribe",
         action="store_true",
         help="Only preprocess; do not call the API",
+    )
+    parser.add_argument(
+        "--skip-before",
+        action="store_true",
+        help="Skip before/ baseline (convert-only + transcribe) to save one API call",
     )
     parser.add_argument(
         "--mode",
@@ -57,22 +69,57 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_KEEP_SILENCE_S,
         help=f"Seconds of pause left after compressing a long gap (default: {DEFAULT_KEEP_SILENCE_S})",
     )
+    parser.add_argument(
+        "--locale",
+        default=None,
+        help=(
+            "MAI language: ur (default, Urdu script), en, hi, or auto. "
+            "Use ur for Eng+Urdu so speech is not written as Hindi."
+        ),
+    )
+    parser.add_argument(
+        "--api-retries",
+        type=int,
+        default=DEFAULT_RETRIES,
+        help=f"API retries on timeout/5xx/429 (default: {DEFAULT_RETRIES})",
+    )
+    parser.add_argument(
+        "--api-timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_S,
+        help=f"API read timeout seconds (default: {DEFAULT_TIMEOUT_S})",
+    )
+    parser.add_argument(
+        "--no-parallel-api",
+        action="store_true",
+        help="Run before/after API calls sequentially",
+    )
     args = parser.parse_args(argv)
 
-    print("== Preprocess ==")
-    cleaned = preprocess(
-        args.input,
-        mode=args.mode,
-        threshold_db=args.threshold_db,
-        min_pause_s=args.min_pause,
-        keep_silence_s=args.keep_silence,
-    )
-    if args.skip_transcribe:
-        print("Skipping transcription (--skip-transcribe).")
-        return 0
+    try:
+        result = process_file(
+            args.input,
+            mode=args.mode,
+            threshold_db=args.threshold_db,
+            min_pause_s=args.min_pause,
+            keep_silence_s=args.keep_silence,
+            locale=args.locale,
+            skip_transcribe=args.skip_transcribe,
+            skip_before=args.skip_before,
+            parallel_api=not args.no_parallel_api,
+            api_retries=args.api_retries,
+            api_timeout_s=args.api_timeout,
+        )
+    except (TranscribeError, FileNotFoundError, SystemExit) as exc:
+        print(exc, file=sys.stderr)
+        return 1
 
-    print("\n== Transcribe ==")
-    transcribe(cleaned)
+    print(f"\nJob folder: {result.job_dir}")
+    if result.job_dir:
+        print(f"  before/ → {Path(result.job_dir) / 'before'}")
+        print(f"  after/  → {Path(result.job_dir) / 'after'}")
+        if (Path(result.job_dir) / "comparison.md").exists():
+            print("  comparison.md")
     return 0
 
 
